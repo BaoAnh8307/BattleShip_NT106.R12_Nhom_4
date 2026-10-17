@@ -1,0 +1,46 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+.coverage
+htmlcov/
+
+# ===== Database (file thật không commit) =====
+*.db
+*.sqlite
+*.sqlite3
+
+# ===== Cấu hình riêng từng máy (commit file *.example thay thế) =====
+config.local.py
+appsettings.local.json
+.env
+
+# ===== Visual Studio / .NET =====
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.userprefs
+*.DotSettings.user
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.nupkg
+packages/
+TestResults/
+*.log
+
+# ===== VS Code / JetBrains =====
+.vscode/
+.idea/
+
+# ===== Hệ điều hành =====
+.DS_Store
+Thumbs.db
+desktop.ini

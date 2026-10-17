@@ -1,0 +1,5 @@
+# Thư viện Python cho server (hầu hết dùng thư viện chuẩn: socket, threading, json, sqlite3, hashlib)
+pytest>=8.0
+
+# Chỉ bỏ comment nếu nhóm chọn bcrypt thay cho hashlib.pbkdf2_hmac
+# bcrypt>=4.0
