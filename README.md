@@ -19,7 +19,7 @@ Game Battleship 2 người chơi qua mạng. Client C# WinForms, server Python, 
 | Giao thức mạng | TCP, port mặc định 5000 (đặt trong config) |
 | Khung message | JSON mỗi dòng, kết thúc bằng `\n` |
 | Server | Python 3.11+ (1 thread/client, dùng `Lock` cho trạng thái chung) |
-| Cơ sở dữ liệu | SQLite (`sqlite3`), hash mật khẩu bằng `hashlib.pbkdf2_hmac` |
+| Cơ sở dữ liệu | Microsoft SQL Server (dùng `pyodbc` hoặc `pymssql`), hash mật khẩu bằng `hashlib.pbkdf2_hmac` |
 | Client | C# WinForms, .NET 10 |
 | Giao diện | ReaLTaiizor (tổng quan, miễn phí, mã nguồn mở) + GDI+ (`BoardPanel` vẽ bàn cờ). Không dùng Guna.UI2 vì yêu cầu kích hoạt license |
 | Luật chơi | Server giữ; server không gửi vị trí tàu cho đối thủ |
@@ -78,7 +78,7 @@ dotnet test client          # test phía C#
 - Việc đụng `docs/PROTOCOL.md`: cả nhóm phải duyệt. Muốn đổi giao thức thì sửa tài liệu trước, báo nhóm, rồi mới sửa code.
 - Chỉ sửa thư mục của mình. Cần sửa thư mục người khác thì nhắn họ hoặc mở PR riêng để họ review.
 - Client: **một solution, một project**. Mỗi form một người phụ trách; ai thêm file vào `.csproj` thì commit và merge ngay.
-- Không commit `bin/`, `obj/`, `.vs/`, `*.db`, file cấu hình riêng từng máy (dùng file `*.example`).
+- Không commit `bin/`, `obj/`, `.vs/`, chuỗi kết nối CSDL (Connection String), file cấu hình riêng từng máy (dùng file `*.example`).
 
 ## Mốc tiến độ
 
