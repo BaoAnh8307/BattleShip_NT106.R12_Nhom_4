@@ -129,11 +129,9 @@ class Board:
         if not self.is_placed:
             raise NotPlacedError("Chưa đặt tàu trên bàn cờ")
 
-        try:
-            x_int = int(x)
-            y_int = int(y)
-        except (ValueError, TypeError) as exc:
-            raise OutOfBoundsError("Tọa độ bắn phải là số nguyên") from exc
+        if type(x) is not int or type(y) is not int:
+            raise OutOfBoundsError("Tọa độ bắn phải là số nguyên")
+        x_int, y_int = x, y
 
         if not (0 <= x_int < BOARD_SIZE and 0 <= y_int < BOARD_SIZE):
             raise OutOfBoundsError(f"Tọa độ ({x}, {y}) ngoài bảng 0..{BOARD_SIZE - 1}")
