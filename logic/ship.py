@@ -74,11 +74,9 @@ class Ship:
             raise InvalidShipsError(f"Hướng đặt tàu phải là 'H' hoặc 'V', nhận được: {self.dir}")
         self.dir = dir_str
 
-        try:
-            self.x = int(self.x)
-            self.y = int(self.y)
-        except (ValueError, TypeError) as exc:
-            raise InvalidShipsError("Tọa độ tàu phải là số nguyên") from exc
+        # int(2.5) và int(True) đều tạo tọa độ sai theo protocol.
+        if type(self.x) is not int or type(self.y) is not int:
+            raise InvalidShipsError("Tọa độ tàu phải là số nguyên (không nhận float/bool/chuỗi)")
 
         if self.dir == "H":
             self.cells = [Cell(self.x + i, self.y) for i in range(self.length)]
