@@ -8,6 +8,7 @@ Loi nghiep vu (trung ten, sai mat khau) nem ra DbError, code trung voi ma loi tr
 import hashlib
 import hmac
 import os
+from contextlib import closing
 
 import pyodbc
 
@@ -53,7 +54,7 @@ def register(username, password):
     Viec kiem tra do dai/ky tu (INVALID_USERNAME, WEAK_PASSWORD) la cua server, o day khong kiem tra lai."""
     salt = os.urandom(16)
     pw_hash = _hash(password, salt)
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         cur = conn.cursor()
         try:
             cur.execute(
@@ -71,7 +72,7 @@ def register(username, password):
 def login(username, password):
     """Dung -> {'user_id': .., 'username': ..}. Sai ten hoac sai mat khau -> DbError('AUTH_FAILED')
     (cố ý không phân biệt hai trường hợp, theo protocol)."""
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         row = conn.cursor().execute(
             "SELECT user_id, username, password_hash, salt FROM Users WHERE username = ?",
             username,
@@ -91,7 +92,7 @@ def login(username, password):
 
 def create_match(player1_id, player2_id):
     """Goi luc GAME_START. Tra ve match_id, server nho giu lai de goi finish_match."""
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         cur = conn.cursor()
         cur.execute(
             "INSERT INTO Matches (player1_id, player2_id) "
@@ -107,7 +108,7 @@ def finish_match(match_id, winner_id, reason, total_shots):
     """Goi luc GAME_OVER (ca SURRENDER va DISCONNECT).
     reason: 'ALL_SHIPS_SUNK' | 'SURRENDER' | 'DISCONNECT'.
     Goi 2 lan cung khong sao, lan sau khong ghi de (chi cap nhat khi ended_at con NULL)."""
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         conn.cursor().execute(
             "UPDATE Matches SET winner_id = ?, end_reason = ?, total_shots = ?, "
             "ended_at = SYSUTCDATETIME() "
@@ -121,7 +122,7 @@ def finish_match(match_id, winner_id, reason, total_shots):
 
 def get_stats(user_id):
     """Tra ve {'played', 'wins', 'losses'} - dung luon lam data cho STATS. Chi dem van da ket thuc."""
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         row = conn.cursor().execute(
             "SELECT COUNT(*), COALESCE(SUM(CASE WHEN winner_id = ? THEN 1 ELSE 0 END), 0) "
             "FROM Matches "
@@ -135,7 +136,7 @@ def get_stats(user_id):
 def get_history(user_id, limit=20):
     """Tra ve list dict de nhet vao HISTORY.matches, moi nhat truoc. limit mac dinh 20, toi da 50."""
     limit = max(1, min(int(limit), 50))
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         rows = conn.cursor().execute(
             "SELECT TOP (?) m.match_id, u.username, "
             "       CASE WHEN m.winner_id = ? THEN 'WIN' ELSE 'LOSE' END, "
