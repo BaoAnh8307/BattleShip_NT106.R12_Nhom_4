@@ -498,3 +498,4 @@ Các điểm dưới đây từng để ngỏ ở bản nháp, nay cả nhóm đ
 |---|---|---|---|
 | 0.1 (nháp) | | | Bản nháp đầu tiên |
 | 1.0 | 2026-10-20 | Bảo Anh | Nhóm chốt v1: ghi nhận các quyết định ở mục 9, bỏ trạng thái nháp |
+| 1.1 | 2026-11-10 | Bảo Anh | Nhóm chốt v1.1 : thay đổi về CSDL từ SQLite thành Microsoft SQL Server |
