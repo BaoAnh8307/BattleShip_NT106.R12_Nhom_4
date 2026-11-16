@@ -1,16 +1,43 @@
+using BattleShip.App;
+using BattleShip.Forms;
+
 namespace BattleShip;
 
-static class Program
+internal static class Program
 {
-    /// <summary>
-    ///  The main entry point for the application.
-    /// </summary>
     [STAThread]
-    static void Main()
+    private static void Main()
     {
-        // To customize application configuration such as set high DPI settings or default font,
-        // see https://aka.ms/applicationconfiguration.
         ApplicationConfiguration.Initialize();
-        Application.Run(new Form1());
-    }    
+
+        // Cài sẵn context của WinForms để event của client luôn quay về luồng giao diện.
+        SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+
+        try
+        {
+            AppSession.Start();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(ex.Message, "BattleShip", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        // Vòng đời: Đăng nhập -> Sảnh -> (Đăng xuất) -> Đăng nhập ...
+        while (true)
+        {
+            using (var login = new FormLogin())
+            {
+                if (login.ShowDialog() != DialogResult.OK)
+                    break;
+            }
+
+            // TODO: thay FormLobbyTemp bằng FormLobby thật khi làm xong.
+            using var lobby = new FormLobbyTemp();
+            if (lobby.ShowDialog() != DialogResult.Retry)
+                break;
+        }
+
+        Task.Run(AppSession.ShutdownAsync).GetAwaiter().GetResult();
+    }
 }
