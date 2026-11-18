@@ -21,7 +21,7 @@ internal static class Program
         {
             MessageBox.Show(ex.Message, "BattleShip", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
-        }
+        }   
 
         // Vòng đời: Đăng nhập -> Sảnh -> (Đăng xuất) -> Đăng nhập ...
         while (true)
@@ -33,7 +33,7 @@ internal static class Program
             }
 
             // TODO: thay FormLobbyTemp bằng FormLobby thật khi làm xong.
-            using var lobby = new FormLobbyTemp();
+            using var lobby = new FormLobby();
             if (lobby.ShowDialog() != DialogResult.Retry)
                 break;
         }
