@@ -32,7 +32,6 @@ internal static class Program
                     break;
             }
 
-            // TODO: thay FormLobbyTemp bằng FormLobby thật khi làm xong.
             using var lobby = new FormLobby();
             if (lobby.ShowDialog() != DialogResult.Retry)
                 break;

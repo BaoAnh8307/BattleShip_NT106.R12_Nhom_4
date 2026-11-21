@@ -134,25 +134,40 @@ public sealed class FormLobby : Form
 
         using var place = new FormPlaceShips(match);
         var result = place.ShowDialog(this);
-        _placing = false;
 
         if (result == DialogResult.Abort || _client.State == SessionState.Disconnected)
         {
+            _placing = false;
             // FormPlaceShips đã báo lý do mất kết nối.
             await ReturnToLoginAsync();
             return;
         }
 
         if (result == DialogResult.OK)
-            Theme.ShowInfo(_status, "Ván đã bắt đầu. Màn hình chiến đấu đang chờ tích hợp.");
+        {
+            var battleResult = await BattleFlow.RunAsync(this, match, place.PlacedShips);
+            _placing = false;
+
+            if (battleResult == DialogResult.Abort || _client.State == SessionState.Disconnected)
+            {
+                // FormBattleView đã báo lý do mất kết nối.
+                await ReturnToLoginAsync();
+                return;
+            }
+
+            Theme.ShowInfo(_status, "Ván đã kết thúc. Bạn có thể tìm trận mới.");
+        }
         else
+        {
+            _placing = false;
             Theme.ShowProgress(_status, "Đã quay lại sảnh.");
+        }
         UpdateButtons();
     }
 
     private void GameOver(GameOverInfo result)
     {
-        if (_leaving) return;
+        if (_leaving || _placing) return;
         Theme.ShowInfo(_status, "Ván đã kết thúc. Bạn có thể tìm trận mới.");
         UpdateButtons();
     }
