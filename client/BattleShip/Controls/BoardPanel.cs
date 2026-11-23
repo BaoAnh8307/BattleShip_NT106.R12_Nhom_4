@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using BattleShip.Network;
 
 namespace BattleShip.Controls;
@@ -16,15 +17,11 @@ public enum BoardMode
 }
 
 /// <summary>
-/// Control vẽ bàn cờ 10x10 bằng GDI+. Dùng cho bàn của mình (đặt tàu, hiện tàu, trúng/trượt do đối thủ bắn)
-/// và bảng theo dõi (bắn vào đối thủ).
-///
-/// Cách dùng chính:
-///  - Đặt tàu: Mode = Place; gán CurrentShip; nghe ShipPlaced; xoay bằng phím (RotationKey) hoặc gọi Rotate().
-///  - Chiến đấu, bảng theo dõi: Mode = Target (hoặc Disabled khi chưa tới lượt); nghe CellClicked để gửi FIRE;
-///    khi nhận FIRE_RESULT gọi ApplyResult(info).
-///  - Chiến đấu, bàn của mình: LoadShips(...) rồi gọi ApplyResult(info) cho mỗi OPPONENT_FIRED.
-/// Phần logic nằm trong <see cref="BoardModel"/> (đã có kiểm thử), lớp này chỉ vẽ và chuyển thao tác chuột.
+/// Control vẽ bàn cờ 10x10 bằng GDI+, dùng ảnh tàu (Assets\Ships) và tự lùi về khối màu nếu thiếu ảnh.
+///  - Đặt tàu: Mode = Place; gán CurrentShip; nghe ShipPlaced; xoay bằng RotationKey hoặc Rotate().
+///  - Chiến đấu, bảng theo dõi: ShowShips = false; Mode = Target hoặc Disabled; nghe CellClicked;
+///    khi nhận FIRE_RESULT gọi ApplyResult(info) (tàu địch chỉ lộ ra khi đã chìm).
+///  - Chiến đấu, bàn của mình: ShowShips = true; LoadShips(...); ApplyResult(info) cho mỗi OPPONENT_FIRED.
 /// </summary>
 public class BoardPanel : Control
 {
@@ -37,6 +34,8 @@ public class BoardPanel : Control
     private Direction _direction = Direction.Horizontal;
     private bool _showShips = true;
     private bool _showCoordinates;
+    private bool _useShipImages = true;
+    private ShipSpriteCache? _sprites = ShipSpriteCache.Shared;
 
     public BoardPanel()
     {
@@ -103,6 +102,7 @@ public class BoardPanel : Control
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public Keys RotationKey { get; set; } = Keys.R;
 
+    /// <summary>true: vẽ các tàu đã nạp (bàn của mình). false: bảng địch, KHÔNG vẽ tàu chưa chìm.</summary>
     [DefaultValue(true)]
     public bool ShowShips
     {
@@ -125,8 +125,39 @@ public class BoardPanel : Control
         }
     }
 
+    /// <summary>false: luôn vẽ khối màu, không dùng ảnh tàu.</summary>
+    [DefaultValue(true)]
+    public bool UseShipImages
+    {
+        get => _useShipImages;
+        set
+        {
+            _useShipImages = value;
+            Invalidate();
+        }
+    }
+
+    /// <summary>
+    /// Nơi lấy ảnh tàu (mặc định <see cref="ShipSpriteCache.Shared"/>). BoardPanel không sở hữu nên không Dispose nó;
+    /// nếu bạn tự tạo một cache riêng thì tự Dispose khi đóng Form.
+    /// </summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public ShipSpriteCache? Sprites
+    {
+        get => _sprites;
+        set
+        {
+            _sprites = value;
+            Invalidate();
+        }
+    }
+
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public IReadOnlyList<ShipPlacement> PlacedShips => _model.Ships;
+
+    /// <summary>Các tàu đã chìm và đã lộ ra nguyên con trên bàn này.</summary>
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public IReadOnlyList<ShipPlacement> SunkShips => _model.SunkShips;
 
     [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool AllShipsPlaced => _model.AllShipsPlaced;
@@ -166,7 +197,7 @@ public class BoardPanel : Control
         Invalidate();
     }
 
-    /// <summary>Xóa cả tàu và dấu bắn, dùng khi bắt đầu ván mới.</summary>
+    /// <summary>Xóa cả tàu, dấu bắn và tàu chìm, dùng khi bắt đầu ván mới.</summary>
     public void Reset()
     {
         _model.Reset();
@@ -181,15 +212,24 @@ public class BoardPanel : Control
         Invalidate();
     }
 
-    /// <summary>Ghi một phát bắn lên bàn cờ này.</summary>
-    public void ApplyShot(int x, int y, ShotResult result, IReadOnlyList<Cell>? sunkCells = null)
+    /// <summary>Ghi một phát bắn. Truyền <paramref name="sunkShip"/> khi tàu chìm để hiện nguyên sprite con tàu.</summary>
+    public void ApplyShot(int x, int y, ShotResult result, IReadOnlyList<Cell>? sunkCells = null, string? sunkShip = null)
     {
-        _model.ApplyShot(x, y, result, sunkCells);
+        _model.ApplyShot(x, y, result, sunkCells, sunkShip);
         Invalidate();
     }
 
-    /// <summary>Tiện lợi: ghi kết quả từ FIRE_RESULT hoặc OPPONENT_FIRED.</summary>
-    public void ApplyResult(FireResultInfo info) => ApplyShot(info.X, info.Y, info.Result, info.SunkCells);
+    /// <summary>Tiện lợi: ghi kết quả từ FIRE_RESULT hoặc OPPONENT_FIRED (đã gồm tên tàu và các ô tàu chìm).</summary>
+    public void ApplyResult(FireResultInfo info) =>
+        ApplyShot(info.X, info.Y, info.Result, info.SunkCells, info.SunkShip);
+
+    /// <summary>Lộ các tàu đã chìm khi đã biết đầy đủ vị trí. Trả về số tàu hợp lệ đã lộ.</summary>
+    public int RevealSunkShips(IEnumerable<ShipPlacement> ships)
+    {
+        var count = ships.Count(ship => _model.RevealSunkShip(ship));
+        Invalidate();
+        return count;
+    }
 
     public bool IsAlreadyShot(int x, int y) => _model.AlreadyShot(x, y);
 
@@ -273,12 +313,22 @@ public class BoardPanel : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        var g = e.Graphics;
+        Render(e.Graphics, ClientSize);
+    }
+
+    /// <summary>
+    /// Vẽ toàn bộ bàn cờ vào <paramref name="g"/> với vùng <paramref name="size"/>. Tách riêng khỏi OnPaint
+    /// để kiểm thử được bằng cách vẽ vào một Bitmap, không cần hiển thị form.
+    /// </summary>
+    public void Render(Graphics g, Size size)
+    {
         g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
         g.Clear(BackColor);
 
         var label = _showCoordinates ? LabelSpace : 0;
-        var layout = BoardGeometry.Compute(ClientSize.Width, ClientSize.Height, label);
+        var layout = BoardGeometry.Compute(size.Width, size.Height, label);
         var cs = layout.CellSize;
         var ox = layout.OriginX;
         var oy = layout.OriginY;
@@ -299,9 +349,13 @@ public class BoardPanel : Control
 
         if (_showCoordinates)
             DrawCoordinates(g, ox, oy, cs, label);
+
+        // Các ô đã được phủ bằng ảnh tàu chìm: không vẽ thêm ô đỏ sẫm đè lên.
+        var covered = new HashSet<Cell>();
         if (_showShips)
-            DrawShips(g, ox, oy, cs);
-        DrawMarks(g, ox, oy, cs);
+            DrawShips(g, ox, oy, cs, covered); // sương mù: bảng địch có ShowShips = false nên không bao giờ vẽ tàu chưa chìm
+        DrawRevealedShips(g, ox, oy, cs, covered);
+        DrawMarks(g, ox, oy, cs, covered);     // dấu trúng/trượt luôn nằm TRÊN ảnh tàu
         DrawHover(g, ox, oy, cs);
 
         if (_mode == BoardMode.Disabled)
@@ -325,7 +379,33 @@ public class BoardPanel : Control
         }
     }
 
-    private void DrawShips(Graphics g, int ox, int oy, int cs)
+    private Image? GetSprite(string shipName, int length, Direction dir) =>
+        _useShipImages ? _sprites?.Get(shipName, length, dir) : null;
+
+    private static Rectangle ShipRectangle(int ox, int oy, int cs, int x, int y, int length, Direction dir) =>
+        new(ox + x * cs, oy + y * cs,
+            (dir == Direction.Horizontal ? length : 1) * cs,
+            (dir == Direction.Horizontal ? 1 : length) * cs);
+
+    /// <summary>Vẽ ảnh tàu trải liền trên hình chữ nhật <paramref name="dest"/>; sunk = làm tối và ngả đỏ.</summary>
+    private static void DrawShipImage(Graphics g, Image image, Rectangle dest, float opacity, bool sunk)
+    {
+        var matrix = new ColorMatrix(new float[][]
+        {
+            [sunk ? 0.55f : 1f, 0, 0, 0, 0],
+            [0, sunk ? 0.30f : 1f, 0, 0, 0],
+            [0, 0, sunk ? 0.30f : 1f, 0, 0],
+            [0, 0, 0, opacity, 0],
+            [0, 0, 0, 0, 1],
+        });
+
+        using var attributes = new ImageAttributes();
+        attributes.SetColorMatrix(matrix);
+        attributes.SetWrapMode(WrapMode.TileFlipXY); // tránh viền lem ở mép ảnh khi co giãn
+        g.DrawImage(image, dest, 0, 0, image.Width, image.Height, GraphicsUnit.Pixel, attributes);
+    }
+
+    private void DrawShips(Graphics g, int ox, int oy, int cs, HashSet<Cell> covered)
     {
         using var fill = new SolidBrush(ShipColor);
         using var outline = new Pen(Color.FromArgb(95, 115, 132), 1.5f);
@@ -333,19 +413,55 @@ public class BoardPanel : Control
         foreach (var ship in _model.Ships)
         {
             var spec = Fleet.Find(ship.Name);
-            if (spec is null) continue;
+            if (spec is null)
+                continue;
 
-            var cellsX = ship.Dir == Direction.Horizontal ? spec.Length : 1;
-            var cellsY = ship.Dir == Direction.Horizontal ? 1 : spec.Length;
-            var rect = new Rectangle(ox + ship.X * cs + 3, oy + ship.Y * cs + 3, cellsX * cs - 6, cellsY * cs - 6);
-
-            using var path = RoundedRect(rect, Math.Max(3, cs / 6));
-            g.FillPath(fill, path);
-            g.DrawPath(outline, path);
+            var rect = ShipRectangle(ox, oy, cs, ship.X, ship.Y, spec.Length, ship.Dir);
+            var image = GetSprite(ship.Name, spec.Length, ship.Dir);
+            if (image is not null)
+            {
+                var sunk = _model.IsShipSunk(ship);
+                DrawShipImage(g, image, rect, 1f, sunk);
+                if (sunk)
+                    foreach (var cell in Fleet.CellsOf(ship))
+                        covered.Add(cell);
+            }
+            else
+            {
+                // Không có ảnh: vẽ khối màu như trước.
+                using var path = RoundedRect(Rectangle.Inflate(rect, -3, -3), Math.Max(3, cs / 6));
+                g.FillPath(fill, path);
+                g.DrawPath(outline, path);
+            }
         }
     }
 
-    private void DrawMarks(Graphics g, int ox, int oy, int cs)
+    /// <summary>Vẽ các tàu đã chìm và được lộ ra (chủ yếu cho bảng theo dõi của địch).</summary>
+    private void DrawRevealedShips(Graphics g, int ox, int oy, int cs, HashSet<Cell> covered)
+    {
+        foreach (var revealed in _model.RevealedShips)
+        {
+            var placement = revealed.Placement;
+
+            // Tàu của chính mình đã được DrawShips vẽ (kèm hiệu ứng chìm), không vẽ lại.
+            if (_showShips && _model.Ships.Any(s => s.Name == placement.Name))
+                continue;
+
+            var image = GetSprite(placement.Name, revealed.Length, placement.Dir);
+            if (image is null)
+                continue; // thiếu ảnh: các ô chìm vẫn được DrawMarks tô đỏ sẫm
+
+            var rect = ShipRectangle(ox, oy, cs, placement.X, placement.Y, revealed.Length, placement.Dir);
+            DrawShipImage(g, image, rect, 1f, sunk: true);
+
+            for (var i = 0; i < revealed.Length; i++)
+                covered.Add(placement.Dir == Direction.Horizontal
+                    ? new Cell(placement.X + i, placement.Y)
+                    : new Cell(placement.X, placement.Y + i));
+        }
+    }
+
+    private void DrawMarks(Graphics g, int ox, int oy, int cs, HashSet<Cell> covered)
     {
         using var hitFill = new SolidBrush(HitColor);
         using var hitOutline = new Pen(Color.White, 1.5f);
@@ -362,29 +478,32 @@ public class BoardPanel : Control
                 switch (_model.MarkAt(x, y))
                 {
                     case CellMark.Hit:
-                    {
-                        var r = cs * 0.28f;
-                        g.FillEllipse(hitFill, px + cs / 2f - r, py + cs / 2f - r, 2 * r, 2 * r);
-                        g.DrawEllipse(hitOutline, px + cs / 2f - r, py + cs / 2f - r, 2 * r, 2 * r);
-                        break;
-                    }
+                        {
+                            var r = cs * 0.28f;
+                            g.FillEllipse(hitFill, px + cs / 2f - r, py + cs / 2f - r, 2 * r, 2 * r);
+                            g.DrawEllipse(hitOutline, px + cs / 2f - r, py + cs / 2f - r, 2 * r, 2 * r);
+                            break;
+                        }
                     case CellMark.Miss:
-                    {
-                        var r = cs * 0.12f;
-                        g.FillEllipse(missFill, px + cs / 2f - r, py + cs / 2f - r, 2 * r, 2 * r);
-                        break;
-                    }
+                        {
+                            var r = cs * 0.12f;
+                            g.FillEllipse(missFill, px + cs / 2f - r, py + cs / 2f - r, 2 * r, 2 * r);
+                            break;
+                        }
                     case CellMark.Sunk:
-                    {
-                        using var path = RoundedRect(new Rectangle(px + 3, py + 3, cs - 6, cs - 6), Math.Max(3, cs / 6));
-                        g.FillPath(sunkFill, path);
-                        g.DrawPath(sunkOutline, path);
-                        break;
-                    }
+                        {
+                            if (!covered.Contains(new Cell(x, y)))
+                            {
+                                using var path = RoundedRect(new Rectangle(px + 3, py + 3, cs - 6, cs - 6), Math.Max(3, cs / 6));
+                                g.FillPath(sunkFill, path);
+                                g.DrawPath(sunkOutline, path);
+                            }
+                            break;
+                        }
+                }
                 }
             }
         }
-    }
 
     private void DrawHover(Graphics g, int ox, int oy, int cs)
     {
@@ -402,6 +521,18 @@ public class BoardPanel : Control
         else if (_mode == BoardMode.Place && _currentShip is not null)
         {
             var valid = _model.IsValidPreview(hover, _currentShip, _direction);
+            var image = valid ? GetSprite(_currentShip.Name, _currentShip.Length, _direction) : null;
+
+            if (image is not null)
+            {
+                // Xem trước bằng chính ảnh tàu, bán trong suốt, kèm khung xanh.
+                var rect = ShipRectangle(ox, oy, cs, hover.X, hover.Y, _currentShip.Length, _direction);
+                DrawShipImage(g, image, rect, 0.65f, sunk: false);
+                using var pen = new Pen(Color.FromArgb(200, 47, 180, 124), 2f);
+                g.DrawRectangle(pen, rect);
+                return;
+            }
+
             using var brush = new SolidBrush(valid ? Color.FromArgb(160, 47, 180, 124) : Color.FromArgb(160, 229, 72, 77));
             foreach (var cell in _model.PreviewCells(hover, _currentShip, _direction))
             {
