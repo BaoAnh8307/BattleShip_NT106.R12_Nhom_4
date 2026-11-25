@@ -11,9 +11,7 @@ public enum CellMark
     Sunk   // thuộc một tàu đã bị đánh chìm
 }
 
-/// <summary>
-/// Vị trí và kích thước bàn cờ trong control: gốc (OriginX, OriginY) và độ lớn một ô (px).
-/// </summary>
+/// <summary>Vị trí và kích thước bàn cờ trong control: gốc (OriginX, OriginY) và độ lớn một ô (px).</summary>
 public readonly record struct BoardLayout(int OriginX, int OriginY, int CellSize)
 {
     public int TotalSize => CellSize * BoardModel.Size;
@@ -49,9 +47,12 @@ public static class BoardGeometry
     }
 }
 
+/// <summary>Một tàu đã bị đánh chìm (và được phép lộ ra): vị trí đầy đủ và độ dài.</summary>
+public readonly record struct RevealedShip(ShipPlacement Placement, int Length);
+
 /// <summary>
-/// Trạng thái của một bàn cờ 10x10: các tàu đã đặt và các ô đã bắn.
-/// Dùng cho cả bàn của mình (có tàu) và bảng theo dõi (chỉ có dấu bắn). Không phụ thuộc giao diện.
+/// Trạng thái của một bàn cờ 10x10: các tàu đã đặt, các ô đã bắn và các tàu đã chìm được lộ ra.
+/// Dùng cho cả bàn của mình (có tàu) và bảng theo dõi (chỉ có dấu bắn + tàu đã chìm). Không phụ thuộc giao diện.
 /// </summary>
 public sealed class BoardModel
 {
@@ -59,11 +60,18 @@ public sealed class BoardModel
 
     private readonly CellMark[,] _marks = new CellMark[Size, Size];
     private readonly List<ShipPlacement> _ships = [];
+    private readonly List<RevealedShip> _revealed = [];
 
     public IReadOnlyList<ShipPlacement> Ships => _ships;
 
     /// <summary>Đã đặt đủ cả 5 tàu.</summary>
     public bool AllShipsPlaced => _ships.Count == Fleet.Ships.Count;
+
+    /// <summary>Các tàu đã chìm và được lộ ra (vị trí đầy đủ, suy ra từ tên tàu + các ô bị chìm).</summary>
+    public IReadOnlyList<ShipPlacement> SunkShips => _revealed.Select(r => r.Placement).ToList();
+
+    /// <summary>Như <see cref="SunkShips"/> nhưng kèm độ dài, dùng khi vẽ.</summary>
+    public IReadOnlyList<RevealedShip> RevealedShips => _revealed;
 
     public CellMark MarkAt(int x, int y)
     {
@@ -151,13 +159,43 @@ public sealed class BoardModel
     public bool IsValidPreview(Cell origin, ShipSpec spec, Direction dir) =>
         CanPlace(new ShipPlacement(spec.Name, origin.X, origin.Y, dir), out _);
 
+    /// <summary>Mọi ô của tàu này đều đã chìm (tàu của mình bị đánh chìm hoàn toàn).</summary>
+    public bool IsShipSunk(ShipPlacement ship)
+    {
+        if (Fleet.Find(ship.Name) is null)
+            return false;
+
+        foreach (var cell in Fleet.CellsOf(ship))
+            if (!Fleet.InBounds(cell.X, cell.Y) || _marks[cell.X, cell.Y] != CellMark.Sunk)
+                return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Dựng vị trí tàu từ tên và các ô của nó: ô đầu là ô trái nhất / trên cùng; cùng hàng thì ngang, cùng cột thì dọc.
+    /// Trả về null nếu không có ô nào hoặc các ô không thẳng hàng.
+    /// </summary>
+    public static ShipPlacement? PlacementFromCells(string name, IReadOnlyList<Cell> cells)
+    {
+        if (cells.Count == 0)
+            return null;
+
+        var sameRow = cells.All(c => c.Y == cells[0].Y);
+        var sameColumn = cells.All(c => c.X == cells[0].X);
+        if (!sameRow && !sameColumn)
+            return null;
+
+        var direction = sameRow ? Direction.Horizontal : Direction.Vertical; // tàu 1 ô coi như ngang
+        return new ShipPlacement(name, cells.Min(c => c.X), cells.Min(c => c.Y), direction);
+    }
+
     // ----- Phát bắn -----
 
     /// <summary>
-    /// Ghi kết quả một phát bắn. Với <see cref="ShotResult.Sunk"/>, mọi ô trong <paramref name="sunkCells"/>
-    /// chuyển thành <see cref="CellMark.Sunk"/>.
+    /// Ghi kết quả một phát bắn. Với <see cref="ShotResult.Sunk"/>, mọi ô trong <paramref name="sunkCells"/> chuyển thành
+    /// <see cref="CellMark.Sunk"/>; nếu có cả <paramref name="sunkShip"/> thì tàu được lộ ra nguyên con (xem <see cref="SunkShips"/>).
     /// </summary>
-    public void ApplyShot(int x, int y, ShotResult result, IReadOnlyList<Cell>? sunkCells = null)
+    public void ApplyShot(int x, int y, ShotResult result, IReadOnlyList<Cell>? sunkCells = null, string? sunkShip = null)
     {
         if (!Fleet.InBounds(x, y))
             throw new ArgumentOutOfRangeException(nameof(x), "Ô nằm ngoài bảng");
@@ -173,10 +211,39 @@ public sealed class BoardModel
             case ShotResult.Sunk:
                 _marks[x, y] = CellMark.Sunk;
                 if (sunkCells is not null)
+                {
                     foreach (var cell in sunkCells.Where(c => Fleet.InBounds(c.X, c.Y)))
                         _marks[cell.X, cell.Y] = CellMark.Sunk;
+
+                    if (!string.IsNullOrWhiteSpace(sunkShip) && PlacementFromCells(sunkShip, sunkCells) is { } placement)
+                        AddRevealed(placement, sunkCells.Count);
+                }
                 break;
         }
+    }
+
+    /// <summary>
+    /// Lộ nguyên con tàu đã chìm khi đã biết đầy đủ vị trí (tên, ô đầu, hướng). Trả về false nếu tàu không hợp lệ.
+    /// </summary>
+    public bool RevealSunkShip(ShipPlacement placement)
+    {
+        if (Fleet.Find(placement.Name) is null)
+            return false;
+
+        var cells = Fleet.CellsOf(placement);
+        if (cells.Any(c => !Fleet.InBounds(c.X, c.Y)))
+            return false;
+
+        foreach (var cell in cells)
+            _marks[cell.X, cell.Y] = CellMark.Sunk;
+        AddRevealed(placement, cells.Count);
+        return true;
+    }
+
+    private void AddRevealed(ShipPlacement placement, int length)
+    {
+        _revealed.RemoveAll(r => r.Placement.Name == placement.Name);
+        _revealed.Add(new RevealedShip(placement, length));
     }
 
     public void ClearMarks()
@@ -184,6 +251,7 @@ public sealed class BoardModel
         for (var y = 0; y < Size; y++)
             for (var x = 0; x < Size; x++)
                 _marks[x, y] = CellMark.Empty;
+        _revealed.Clear();
     }
 
     public void Reset()

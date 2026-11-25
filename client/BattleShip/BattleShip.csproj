@@ -21,5 +21,10 @@
   <ItemGroup>
     <PackageReference Include="ReaLTaiizor" Version="3.8.2.1" />
   </ItemGroup>
+	<ItemGroup>
+		<Content Include="Assets\Ships\*.png">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
 
 </Project>
