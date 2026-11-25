@@ -39,5 +39,6 @@ internal static class Program
         }
 
         Task.Run(AppSession.ShutdownAsync).GetAwaiter().GetResult();
+        BattleShip.Controls.ShipSpriteCache.Shared.Dispose();
     }
 }

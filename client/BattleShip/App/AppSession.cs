@@ -33,11 +33,7 @@ public static class AppSession
         if (config.UseMock)
             return new MockNetworkClient(SynchronizationContext.Current);
 
-        // TODO (nối client thật): thay dòng throw bên dưới bằng việc tạo NetworkClient của Nam, ví dụ:
-        //     return new NetworkClient(SynchronizationContext.Current);
-        // Khi đó đặt "UseMock": false trong appsettings.json.
-        throw new NotSupportedException(
-            "Chưa nối NetworkClient thật. Đặt \"UseMock\": true trong appsettings.json, hoặc sửa AppSession.CreateClient.");
+        return new NetworkClient(SynchronizationContext.Current);
     }
 
     /// <summary>Kết nối tới server (theo cấu hình) nếu chưa kết nối. Quá thời gian chờ thì ném lỗi.</summary>
