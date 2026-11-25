@@ -32,7 +32,8 @@ internal static class Program
                     break;
             }
 
-            using var lobby = new FormLobby();
+            // Truyền cách tạo FormStats vào sảnh để nút "Thống kê / Lịch sử" mở được.
+            using var lobby = new FormLobby(() => new FormStats());
             if (lobby.ShowDialog() != DialogResult.Retry)
                 break;
         }
