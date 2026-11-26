@@ -28,6 +28,7 @@ class ClientSession:
     user_id: int | None = None
     username: str | None = None
     match_id: str | None = None  # ID nội bộ, KHÔNG phải Matches.match_id trong SQL.
+    room_code: str | None = None
     peer_session_id: str | None = None
     send_lock: Lock = field(default_factory=Lock, repr=False)
     next_server_seq: int = 1
@@ -54,12 +55,27 @@ class Match:
     db_match_id: int | None = None
 
 
+@dataclass
+class Room:
+    code: str
+    host: ClientSession
+    guest: ClientSession | None = None
+    locked: bool = False
+    ready: bool = False
+
+    def snapshot(self):
+        return {"code": self.code, "host": self.host.username,
+                "guest": self.guest.username if self.guest else None,
+                "locked": self.locked, "ready": self.ready}
+
+
 class SessionManager:
     def __init__(self, db: Any):
         self.db = db  # Module database.database hoặc fake DB dùng khi test.
         self._lock = Lock()
         self._sessions: dict[str, ClientSession] = {}
         self._online: dict[int, str] = {}  # user_id -> session_id
+        self._rooms: dict[str, Room] = {}
         self._waiting: deque[str] = deque()
         self._matches: dict[str, Match] = {}
 
@@ -100,18 +116,80 @@ class SessionManager:
             while len(self._waiting) >= 2:
                 p1_id, p2_id = self._waiting.popleft(), self._waiting.popleft()
                 p1, p2 = self._sessions[p1_id], self._sessions[p2_id]
-                match_id = uuid4().hex
-                first_user = random.choice((p1.user_id, p2.user_id))
-                game = GameSession(p1.user_id, p2.user_id, first_turn=first_user)
-                self._matches[match_id] = Match(game, p1_id, p2_id)
-                p1.state = p2.state = "PLACING"
-                p1.match_id = p2.match_id = match_id
-                p1.peer_session_id, p2.peer_session_id = p2_id, p1_id
-                notes.extend([
-                    (p1, event("MATCH_FOUND", {"opponent": p2.username, "you_first": p1.user_id == first_user})),
-                    (p2, event("MATCH_FOUND", {"opponent": p1.username, "you_first": p2.user_id == first_user})),
-                ])
+                notes.extend(self._start_pair(p1, p2))
             return notes
+
+    def _start_pair(self, p1: ClientSession, p2: ClientSession) -> list[Notification]:
+        p1_id, p2_id = p1.session_id, p2.session_id
+        match_id = uuid4().hex
+        first_user = random.choice((p1.user_id, p2.user_id))
+        game = GameSession(p1.user_id, p2.user_id, first_turn=first_user)
+        self._matches[match_id] = Match(game, p1_id, p2_id)
+        p1.state = p2.state = "PLACING"
+        p1.match_id = p2.match_id = match_id
+        p1.peer_session_id, p2.peer_session_id = p2_id, p1_id
+        return [
+            (p1, event("MATCH_FOUND", {"opponent": p2.username, "you_first": p1.user_id == first_user})),
+            (p2, event("MATCH_FOUND", {"opponent": p1.username, "you_first": p2.user_id == first_user})),
+        ]
+
+    def _leave_room(self, client: ClientSession) -> None:
+        room = self._rooms[client.room_code]
+        if client is room.host:
+            del self._rooms[room.code]
+            if room.guest:
+                room.guest.room_code = None
+                room.guest.state = "AUTHED"
+        else:
+            room.guest = None
+            room.ready = False
+        client.room_code = None
+        client.state = "AUTHED"
+
+    def room_request(self, client, kind, data, seq) -> list[Notification]:
+        with self._lock:
+            if kind == "LIST_ROOMS":
+                rooms = [r.snapshot() for r in self._rooms.values() if not r.locked and not r.guest]
+                return [(client, event("ROOM_LIST", {"rooms": rooms}, seq))]
+            if kind == "CREATE_ROOM":
+                code = f"BS-{random.randrange(10000):04d}"
+                while code in self._rooms:
+                    code = f"BS-{random.randrange(10000):04d}"
+                room = Room(code, client)
+                self._rooms[code] = room
+            elif kind == "JOIN_ROOM":
+                code = data.get("code")
+                room = self._rooms.get(code) if isinstance(code, str) else None
+                if not room or room.locked or room.guest:
+                    raise ProtocolError("ROOM_UNAVAILABLE", "Phòng đã đóng, bị khóa hoặc đã đầy.")
+                room.guest = client
+            else:
+                room = self._rooms.get(client.room_code)
+                if not room:
+                    raise ProtocolError("ROOM_CLOSED", "Phòng đã đóng.")
+                if kind == "LEAVE_ROOM":
+                    self._leave_room(client)
+                    return [(client, event("ACK", ref=seq))]
+                if kind == "START_ROOM":
+                    if client is not room.host or not room.guest or not room.ready:
+                        raise ProtocolError("ROOM_NOT_READY", "Chỉ chủ phòng được bắt đầu khi khách sẵn sàng.")
+                    notes = self._start_pair(room.host, room.guest)
+                    room.host.room_code = room.guest.room_code = None
+                    del self._rooms[room.code]
+                    return [(client, event("ACK", ref=seq)), *notes]
+                if kind in ("LOCK_ROOM", "ROOM_READY"):
+                    value = data.get("value")
+                    if type(value) is not bool:
+                        raise ProtocolError("INVALID_PARAMS", "value phải là boolean")
+                    if kind == "LOCK_ROOM" and client is room.host:
+                        room.locked = value
+                    elif kind == "ROOM_READY" and client is room.guest:
+                        room.ready = value
+                    else:
+                        raise ProtocolError("ROOM_ROLE", "Thao tác không dành cho vai trò của bạn.")
+            client.room_code = room.code
+            client.state = "IN_ROOM"
+            return [(client, event("ROOM", room.snapshot(), seq))]
 
     def place_ships(self, client: ClientSession, ships: Any) -> None:
         with self._lock:
@@ -210,6 +288,8 @@ class SessionManager:
         with self._lock:
             if self._sessions.pop(client.session_id, None) is None:
                 return notes
+            if client.room_code:
+                self._leave_room(client)
             self._waiting = deque(sid for sid in self._waiting if sid != client.session_id)
             if client.user_id is not None and self._online.get(client.user_id) == client.session_id:
                 del self._online[client.user_id]
