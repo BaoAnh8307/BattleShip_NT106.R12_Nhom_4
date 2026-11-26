@@ -33,6 +33,9 @@ public sealed class MockNetworkClient : INetworkClient
     private (string Code, string Message)? _forcedError;
     private int _nextUserId = 3;
     private string? _username;
+    private RoomInfo? _room;
+    private DateTime _botActionAt;
+    private bool _roomOwner;
 
     private MockBoard? _myBoard;   // bảng của mình (do PlaceShipsAsync dựng)
     private MockBoard? _botBoard;  // bảng của bot (ngẫu nhiên)
@@ -99,6 +102,7 @@ public sealed class MockNetworkClient : INetworkClient
         lock (_gate)
         {
             ResetMatchLocked();
+            _room = null;
             _username = null;
             _state = SessionState.Disconnected;
         }
@@ -137,6 +141,80 @@ public sealed class MockNetworkClient : INetworkClient
             _state = SessionState.Authed;
             return new LoginInfo(user.Id, username);
         }
+    }
+
+    private RoomInfo BotRoom => new("BS-3168", OpponentName, null, false, false);
+
+    public Task<RoomInfo[]> ListRoomsAsync() => Task.FromResult(new[] { BotRoom });
+
+    public Task<RoomInfo> CreateRoomAsync()
+    {
+        _roomOwner = true;
+        _botActionAt = DateTime.UtcNow.AddSeconds(3);
+        _room = new RoomInfo("BS-7421", _username!, null, false, false);
+        return Task.FromResult(_room);
+    }
+
+    public Task<RoomInfo> JoinRoomAsync(string code)
+    {
+        if (code != BotRoom.Code) throw Err("ROOM_UNAVAILABLE", "Phòng đã đóng.");
+        _roomOwner = false;
+        _room = BotRoom with { Guest = _username };
+        return Task.FromResult(_room);
+    }
+
+    private RoomInfo CurrentRoom => _room ?? throw Err("ROOM_CLOSED", "Phòng đã đóng.");
+
+    public Task<RoomInfo> GetRoomAsync()
+    {
+        var room = CurrentRoom;
+        if (DateTime.UtcNow >= _botActionAt)
+        {
+            if (_roomOwner && room.Guest == null && !room.Locked)
+            {
+                _room = room with { Guest = OpponentName };
+                _botActionAt = DateTime.UtcNow.AddSeconds(2);
+            }
+            else if (_roomOwner && room.Guest != null)
+                _room = room with { Ready = true };
+            else if (!_roomOwner && room.Ready)
+                BeginRoomMatch();
+        }
+        return Task.FromResult(_room ?? room);
+    }
+
+    public Task<RoomInfo> LockRoomAsync(bool value)
+    {
+        if (!_roomOwner) throw Err("ROOM_ROLE", "Chỉ chủ phòng được khóa phòng.");
+        return Task.FromResult(_room = CurrentRoom with { Locked = value });
+    }
+
+    public Task<RoomInfo> SetRoomReadyAsync(bool value)
+    {
+        if (_roomOwner) throw Err("ROOM_ROLE", "Chỉ khách có thể sẵn sàng.");
+        _botActionAt = DateTime.UtcNow.AddSeconds(2);
+        return Task.FromResult(_room = CurrentRoom with { Ready = value });
+    }
+
+    public Task LeaveRoomAsync()
+    {
+        _room = null;
+        return Task.CompletedTask;
+    }
+
+    private void BeginRoomMatch()
+    {
+        _room = null;
+        lock (_gate) _state = SessionState.InQueue;
+        FinishMatchmaking();
+    }
+
+    public Task StartRoomAsync()
+    {
+        if (!_roomOwner || !CurrentRoom.Ready)
+            throw Err("ROOM_NOT_READY", "Khách chưa sẵn sàng.");
+        BeginRoomMatch();
+        return Task.CompletedTask;
     }
 
     public async Task FindMatchAsync()
@@ -315,6 +393,7 @@ public sealed class MockNetworkClient : INetworkClient
         lock (_gate)
         {
             ResetMatchLocked();
+            _room = null;
             _username = null;
             _state = SessionState.Disconnected;
         }
@@ -340,7 +419,11 @@ public sealed class MockNetworkClient : INetworkClient
     {
         await DelayAsync();
         await DelayAsync();
+        FinishMatchmaking();
+    }
 
+    private void FinishMatchmaking()
+    {
         MatchFoundInfo info;
         lock (_gate)
         {

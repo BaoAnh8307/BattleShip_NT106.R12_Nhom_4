@@ -13,6 +13,15 @@ namespace BattleShip.Network;
 /// </summary>
 public interface INetworkClient : IAsyncDisposable
 {
+    Task<RoomInfo[]> ListRoomsAsync();
+    Task<RoomInfo> CreateRoomAsync();
+    Task<RoomInfo> JoinRoomAsync(string code);
+    Task<RoomInfo> GetRoomAsync();
+    Task<RoomInfo> LockRoomAsync(bool value);
+    Task<RoomInfo> SetRoomReadyAsync(bool value);
+    Task LeaveRoomAsync();
+    Task StartRoomAsync();
+
     SessionState State { get; }
 
     // ----- Event (server -> client) -----
