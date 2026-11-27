@@ -102,3 +102,5 @@ public sealed class ServerErrorException : Exception
         Code = code;
     }
 }
+
+public sealed record RoomInfo(string Code, string Host, string? Guest, bool Locked, bool Ready);

@@ -308,3 +308,68 @@ def test_duplicate_login_is_rejected(running_server):
     }, "ERROR")
     assert result["data"]["code"] == "ALREADY_LOGGED_IN"
     assert client.request("PING", {}, "PONG")["data"] == {}
+
+
+def test_room_permissions_and_start(running_server):
+    host = logged_in(running_server, "Host01")
+    guest = logged_in(running_server, "Guest01")
+    other = logged_in(running_server, "Other01")
+    room = host.request("CREATE_ROOM", {}, "ROOM")["data"]
+    join = {"code": room["code"]}
+    assert other.request("LIST_ROOMS", {}, "ROOM_LIST")["data"]["rooms"] == [room]
+    host.request("LOCK_ROOM", {"value": True}, "ROOM")
+    assert guest.request("JOIN_ROOM", join, "ERROR")["data"]["code"] == "ROOM_UNAVAILABLE"
+    assert other.request("LIST_ROOMS", {}, "ROOM_LIST")["data"]["rooms"] == []
+    host.request("LOCK_ROOM", {"value": False}, "ROOM")
+    guest.request("JOIN_ROOM", join, "ROOM")
+    assert other.request("JOIN_ROOM", join, "ERROR")["data"]["code"] == "ROOM_UNAVAILABLE"
+    assert guest.request("LOCK_ROOM", {"value": True}, "ERROR")["data"]["code"] == "ROOM_ROLE"
+    assert host.request("ROOM_READY", {"value": True}, "ERROR")["data"]["code"] == "ROOM_ROLE"
+    guest.request("ROOM_READY", {"value": True}, "ROOM")
+    assert host.request("GET_ROOM", {}, "ROOM")["data"]["ready"]
+    guest.request("ROOM_READY", {"value": False}, "ROOM")
+    assert host.request("START_ROOM", {}, "ERROR")["data"]["code"] == "ROOM_NOT_READY"
+    guest.request("ROOM_READY", {"value": True}, "ROOM")
+    assert guest.request("START_ROOM", {}, "ERROR")["data"]["code"] == "ROOM_NOT_READY"
+    host.request("START_ROOM", {}, "ACK")
+    for player, opponent in ((host, "Guest01"), (guest, "Host01")):
+        assert player.receive("MATCH_FOUND")["data"]["opponent"] == opponent
+        player.request("PLACE_SHIPS", {"ships": FLEET}, "ACK")
+        player.request("READY", {}, "ACK")
+    host.receive("GAME_START")
+    guest.receive("GAME_START")
+
+
+def test_leave_and_close_room(running_server):
+    host = logged_in(running_server, "RoomHost")
+    guest = logged_in(running_server, "RoomGuest")
+    code = host.request("CREATE_ROOM", {}, "ROOM")["data"]["code"]
+    guest.request("JOIN_ROOM", {"code": code}, "ROOM")
+    guest.request("ROOM_READY", {"value": True}, "ROOM")
+    guest.request("LEAVE_ROOM", {}, "ACK")
+    room = host.request("GET_ROOM", {}, "ROOM")["data"]
+    assert room["guest"] is None and room["ready"] is False
+    guest.request("JOIN_ROOM", {"code": code}, "ROOM")
+    host.request("LEAVE_ROOM", {}, "ACK")
+    assert guest.request("GET_ROOM", {}, "ERROR")["data"]["code"] == "ROOM_CLOSED"
+    assert guest.request("LIST_ROOMS", {}, "ROOM_LIST")["data"]["rooms"] == []
+
+
+def test_host_disconnect_releases_room_guest(running_server):
+    import time
+
+    host = logged_in(running_server, "DropHost")
+    guest = logged_in(running_server, "StaysOnline")
+    code = host.request("CREATE_ROOM", {}, "ROOM")["data"]["code"]
+    guest.request("JOIN_ROOM", {"code": code}, "ROOM")
+    host.close()
+    for attempt in range(100):
+        guest.send("GET_ROOM", {})
+        reply = guest.receive()
+        if reply["type"] == "ERROR":
+            assert reply["data"]["code"] == "ROOM_CLOSED"
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("Phòng vẫn tồn tại sau khi chủ phòng ngắt kết nối")
+    assert guest.request("CREATE_ROOM", {}, "ROOM")["data"]["host"] == "StaysOnline"

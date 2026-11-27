@@ -6,12 +6,20 @@ from typing import Any
 from .protocol import ProtocolError, event, require_credentials, require_version
 from .session_manager import ClientSession, Notification, SessionManager
 
+ROOM_STATES = {
+    "LIST_ROOMS": ("AUTHED",), "CREATE_ROOM": ("AUTHED",), "JOIN_ROOM": ("AUTHED",),
+    "GET_ROOM": ("IN_ROOM", "AUTHED"), "LEAVE_ROOM": ("IN_ROOM", "AUTHED"),
+    "ROOM_READY": ("IN_ROOM",), "LOCK_ROOM": ("IN_ROOM",), "START_ROOM": ("IN_ROOM",),
+}
+
 CLIENT_TYPES = {
+    *ROOM_STATES,
     "REGISTER", "LOGIN", "FIND_MATCH", "PLACE_SHIPS", "READY", "FIRE", "SURRENDER",
     "GET_STATS", "GET_HISTORY", "PING",
 }
 
 ALLOWED_STATES = {
+    **ROOM_STATES,
     "REGISTER": ("CONNECTED",),
     "LOGIN": ("CONNECTED",),
     "FIND_MATCH": ("AUTHED",),
@@ -32,6 +40,8 @@ def dispatch(client: ClientSession, message: dict[str, Any], manager: SessionMan
         return [(client, event("PONG", ref=seq))]
     # Machine-state validation comes first, as required by PROTOCOL.md section 4.
     manager._require_state(client, *ALLOWED_STATES[kind])
+    if kind in ROOM_STATES:
+        return manager.room_request(client, kind, data, seq)
     if kind == "REGISTER":
         require_version(data)
         username, password = require_credentials(data, register=True)

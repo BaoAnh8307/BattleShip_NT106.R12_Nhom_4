@@ -234,6 +234,27 @@ public sealed class NetworkClient : INetworkClient
             DateTimeOffset.Parse(GetString(item, "ended_at")))).ToArray();
     }
 
+    private static RoomInfo ParseRoom(JsonElement room) => new(
+        GetString(room, "code"), GetString(room, "host"), OptionalString(room, "guest"),
+        GetBool(room, "locked"), GetBool(room, "ready"));
+
+    public async Task<RoomInfo[]> ListRoomsAsync()
+    {
+        var data = await SendRequestAsync("LIST_ROOMS", new { }, "ROOM_LIST").ConfigureAwait(false);
+        return data.GetProperty("rooms").EnumerateArray().Select(ParseRoom).ToArray();
+    }
+
+    private async Task<RoomInfo> RoomRequestAsync(string command, object data) =>
+        ParseRoom(await SendRequestAsync(command, data, "ROOM").ConfigureAwait(false));
+
+    public Task<RoomInfo> CreateRoomAsync() => RoomRequestAsync("CREATE_ROOM", new { });
+    public Task<RoomInfo> JoinRoomAsync(string code) => RoomRequestAsync("JOIN_ROOM", new { code });
+    public Task<RoomInfo> GetRoomAsync() => RoomRequestAsync("GET_ROOM", new { });
+    public Task<RoomInfo> LockRoomAsync(bool value) => RoomRequestAsync("LOCK_ROOM", new { value });
+    public Task<RoomInfo> SetRoomReadyAsync(bool value) => RoomRequestAsync("ROOM_READY", new { value });
+    public Task LeaveRoomAsync() => SendRequestAsync("LEAVE_ROOM", new { }, "ACK");
+    public Task StartRoomAsync() => SendRequestAsync("START_ROOM", new { }, "ACK");
+
     public async Task PingAsync()
     {
         EnsureConnected();
@@ -358,7 +379,7 @@ public sealed class NetworkClient : INetworkClient
 
         if (reference.HasValue && _pending.TryGetValue(reference.Value, out var pending))
         {
-            if (type is "ACK" or "LOGIN_OK" or "STATS" or "HISTORY" or "PONG" or "FIRE_RESULT")
+            if (type is "ROOM" or "ROOM_LIST" or "ACK" or "LOGIN_OK" or "STATS" or "HISTORY" or "PONG" or "FIRE_RESULT")
                 pending.TrySetResult(root.Clone());
         }
 
