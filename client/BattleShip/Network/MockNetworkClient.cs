@@ -196,6 +196,15 @@ public sealed class MockNetworkClient : INetworkClient
         return Task.FromResult(_room = CurrentRoom with { Ready = value });
     }
 
+    public Task<RoomInfo> KickGuestAsync(string guest)
+    {
+        var room = CurrentRoom;
+        if (!_roomOwner) throw Err("ROOM_ROLE", "Chỉ chủ phòng được mời khách ra.");
+        if (room.Guest != guest) throw Err("GUEST_CHANGED", "Khách này đã rời phòng.");
+        _botActionAt = DateTime.UtcNow.AddSeconds(5);
+        return Task.FromResult(_room = room with { Guest = null, Ready = false });
+    }
+
     public Task LeaveRoomAsync()
     {
         _room = null;

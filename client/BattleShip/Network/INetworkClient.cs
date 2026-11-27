@@ -19,6 +19,7 @@ public interface INetworkClient : IAsyncDisposable
     Task<RoomInfo> GetRoomAsync();
     Task<RoomInfo> LockRoomAsync(bool value);
     Task<RoomInfo> SetRoomReadyAsync(bool value);
+    Task<RoomInfo> KickGuestAsync(string guest);
     Task LeaveRoomAsync();
     Task StartRoomAsync();
 
