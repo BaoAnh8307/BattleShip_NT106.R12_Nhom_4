@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import socket
 import socketserver
-from threading import BoundedSemaphore, Lock
+from threading import BoundedSemaphore
 
 from logic import LogicError
 from .config import Config
@@ -43,29 +43,27 @@ class BattleShipHandler(socketserver.BaseRequestHandler):
                     if not line.endswith(b"\n"):
                         # Incomplete frame (usually peer closed connection).
                         break
-                    with server.dispatch_lock:
+                    try:
+                        message = decode_message(line)
                         try:
-                            message = decode_message(line)
-                            try:
-                                notes = dispatch(client, message, server.manager)
-                            except (ProtocolError, LogicError) as exc:
-                                notes = [(client, error(exc.code, exc.message, message["seq"]))]
-                            except server.db_error_class as exc:
-                                notes = [(client, error(exc.code, exc.code, message["seq"]))]
-                            except Exception:
-                                log.exception("Unhandled request error type=%s", message["type"])
-                                notes = [(client, error("SERVER_ERROR", "Lỗi nội bộ máy chủ", message["seq"]))]
-                        except ProtocolError as exc:
-                            notes = [(client, error(exc.code, exc.message, exc.ref))]
-                        server.send_notifications(notes)
+                            notes = dispatch(client, message, server.manager)
+                        except (ProtocolError, LogicError) as exc:
+                            notes = [(client, error(exc.code, exc.message, message["seq"]))]
+                        except server.db_error_class as exc:
+                            notes = [(client, error(exc.code, exc.code, message["seq"]))]
+                        except Exception:
+                            log.exception("Unhandled request error type=%s", message["type"])
+                            notes = [(client, error("SERVER_ERROR", "Lỗi nội bộ máy chủ", message["seq"]))]
+                    except ProtocolError as exc:
+                        notes = [(client, error(exc.code, exc.message, exc.ref))]
+                    server.send_notifications(notes)
         except (OSError, ConnectionError) as exc:
             log.info("Connection closed session=%s (%s)", client.session_id[:8], exc)
         finally:
-            with server.dispatch_lock:
-                try:
-                    server.send_notifications(server.manager.unregister(client))
-                except Exception:
-                    log.exception("Failed to clean up disconnected session=%s", client.session_id[:8])
+            try:
+                server.send_notifications(server.manager.unregister(client))
+            except Exception:
+                log.exception("Failed to clean up disconnected session=%s", client.session_id[:8])
             log.info("Disconnected session=%s", client.session_id[:8])
 
 
@@ -78,7 +76,6 @@ class BattleShipTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.config = config
         self.manager = SessionManager(database_module)
         self.db_error_class = getattr(database_module, "DbError", type("_NeverDbError", (Exception,), {}))
-        self.dispatch_lock = Lock()  # Keep cross-client event order coherent, including ACK/GAME_START.
         self._capacity = BoundedSemaphore(config.max_clients)
         super().__init__((config.host, config.port), BattleShipHandler)
 

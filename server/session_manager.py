@@ -1,7 +1,7 @@
 """Manage authenticated sockets, matchmaking, game lifecycle and DB records.
 
-All public operations are serialized at the TCP server dispatcher boundary.
-The manager also uses its own lock to protect shared dictionaries / matchmaking.
+The manager uses its own lock to protect shared dictionaries / matchmaking,
+while keeping slow database I/O outside the lock.
 """
 from __future__ import annotations
 
@@ -96,7 +96,9 @@ class SessionManager:
     def login(self, client: ClientSession, username: str, password: str) -> dict[str, Any]:
         with self._lock:
             self._require_state(client, "CONNECTED")
-            account = self.db.login(username, password)
+        account = self.db.login(username, password)
+        with self._lock:
+            self._require_state(client, "CONNECTED")
             user_id = int(account["user_id"])
             if user_id in self._online:
                 raise ProtocolError("ALREADY_LOGGED_IN", "Tài khoản đang đăng nhập ở kết nối khác")
@@ -205,10 +207,22 @@ class SessionManager:
             p1 = self._sessions[match.first_id]
             p2 = self._sessions[match.second_id]
             other = p2 if client is p1 else p1
-            if other.state == "READY":
-                # Tạo bản ghi SQL *sau* khi hai bên đã đặt tàu và ngay trước GAME_START.
-                # DB thất bại => không đổi trạng thái last player, có thể gửi READY lại.
-                match.db_match_id = self.db.create_match(p1.user_id, p2.user_id)
+            need_db_match = other.state == "READY" and match.db_match_id is None
+            p1_uid, p2_uid = p1.user_id, p2.user_id
+
+        db_match_id: int | None = None
+        if need_db_match:
+            # Tạo bản ghi SQL *sau* khi hai bên đã đặt tàu và ngay trước GAME_START.
+            # DB thất bại => không đổi trạng thái last player, có thể gửi READY lại.
+            db_match_id = self.db.create_match(p1_uid, p2_uid)
+
+        with self._lock:
+            self._require_state(client, "PLACING")
+            match = self._get_match(client)
+            if db_match_id is not None and match.db_match_id is None:
+                match.db_match_id = db_match_id
+            p1 = self._sessions[match.first_id]
+            p2 = self._sessions[match.second_id]
             started = match.game.ready(client.user_id)
             if started:
                 p1.state = p2.state = "PLAYING"
@@ -217,6 +231,7 @@ class SessionManager:
             return []
 
     def fire(self, client: ClientSession, x: int, y: int, request_seq: int) -> list[Notification]:
+        db_payload = None
         with self._lock:
             self._require_state(client, "PLAYING")
             match = self._get_match(client)
@@ -227,8 +242,10 @@ class SessionManager:
                 (opponent, event("OPPONENT_FIRED", outcome.for_player(opponent.user_id))),
             ]
             if outcome.game_over:
-                notes.extend(self._finish_match(client.match_id, match))
-            return notes
+                end_notes, db_payload = self._finish_match(client.match_id, match)
+                notes.extend(end_notes)
+        self._persist_match_result(db_payload)
+        return notes
 
     def surrender(self, client: ClientSession, request_seq: int) -> list[Notification]:
         with self._lock:
@@ -242,7 +259,9 @@ class SessionManager:
                     (client, event("ACK", ref=request_seq)),
                     (opponent, event("MATCH_CANCELLED", {"reason": "OPPONENT_LEFT"})),
                 ]
-            return self._finish_match(client.match_id, match)
+            notes, db_payload = self._finish_match(client.match_id, match)
+        self._persist_match_result(db_payload)
+        return notes
 
     def _clear_match(self, key: str | None, match: Match) -> None:
         self._matches.pop(key or "", None)
@@ -252,7 +271,9 @@ class SessionManager:
                 client.state = "AUTHED" if client.user_id is not None else "CONNECTED"
                 client.match_id = client.peer_session_id = None
 
-    def _finish_match(self, key: str | None, match: Match) -> list[Notification]:
+    def _finish_match(
+        self, key: str | None, match: Match
+    ) -> tuple[list[Notification], tuple[int | None, int | None, str | None, int]]:
         game = match.game
         notes: list[Notification] = []
         for sid in (match.first_id, match.second_id):
@@ -264,27 +285,35 @@ class SessionManager:
                     "total_shots": game.total_shots,
                 })))
         self._clear_match(key, match)
+        return notes, (match.db_match_id, game.winner, game.end_reason, game.total_shots)
+
+    def _persist_match_result(self, payload: tuple[int | None, int | None, str | None, int] | None) -> None:
+        if payload is None:
+            return
+        db_match_id, winner, end_reason, total_shots = payload
         # Persist the result once; if SQL unavailable, gameplay still finishes.
         try:
-            if match.db_match_id is None:
+            if db_match_id is None:
                 raise RuntimeError("Missing SQL match_id after GAME_START")
-            self.db.finish_match(match.db_match_id, game.winner, game.end_reason, game.total_shots)
+            self.db.finish_match(db_match_id, winner, end_reason, total_shots)
         except Exception:
-            log.exception("Could not persist finished match db_match_id=%s", match.db_match_id)
-        return notes
+            log.exception("Could not persist finished match db_match_id=%s", db_match_id)
 
     def stats(self, client: ClientSession) -> dict[str, int]:
         with self._lock:
             self._require_state(client, "AUTHED")
-            return self.db.get_stats(client.user_id)
+            user_id = client.user_id
+        return self.db.get_stats(user_id)
 
     def history(self, client: ClientSession, limit: int) -> list[dict[str, Any]]:
         with self._lock:
             self._require_state(client, "AUTHED")
-            return self.db.get_history(client.user_id, limit)
+            user_id = client.user_id
+        return self.db.get_history(user_id, limit)
 
     def unregister(self, client: ClientSession) -> list[Notification]:
         notes: list[Notification] = []
+        db_payload = None
         with self._lock:
             if self._sessions.pop(client.session_id, None) is None:
                 return notes
@@ -302,7 +331,9 @@ class SessionManager:
                     if other is not None:
                         notes.append((other, event("MATCH_CANCELLED", {"reason": "OPPONENT_LEFT"})))
                 elif outcome["action"] == "GAME_OVER":
-                    notes.extend((c, m) for c, m in self._finish_match(client.match_id, match) if c is not client)
+                    end_notes, db_payload = self._finish_match(client.match_id, match)
+                    notes.extend((c, m) for c, m in end_notes if c is not client)
             client.state = "DISCONNECTED"
             client.match_id = client.peer_session_id = None
+        self._persist_match_result(db_payload)
         return notes
