@@ -252,6 +252,7 @@ public sealed class NetworkClient : INetworkClient
     public Task<RoomInfo> GetRoomAsync() => RoomRequestAsync("GET_ROOM", new { });
     public Task<RoomInfo> LockRoomAsync(bool value) => RoomRequestAsync("LOCK_ROOM", new { value });
     public Task<RoomInfo> SetRoomReadyAsync(bool value) => RoomRequestAsync("ROOM_READY", new { value });
+    public Task<RoomInfo> KickGuestAsync(string guest) => RoomRequestAsync("KICK_GUEST", new { guest });
     public Task LeaveRoomAsync() => SendRequestAsync("LEAVE_ROOM", new { }, "ACK");
     public Task StartRoomAsync() => SendRequestAsync("START_ROOM", new { }, "ACK");
 

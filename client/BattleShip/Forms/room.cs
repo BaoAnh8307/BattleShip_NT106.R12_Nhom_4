@@ -13,6 +13,7 @@ public sealed class FormRoom : Form
     private readonly Label _ready = Theme.FieldLabel("");
     private readonly Label _status = Theme.Status();
     private readonly Button _action = Theme.PrimaryButton("");
+    private readonly Button _kick = Theme.PrimaryButton("Mời khách ra");
     private readonly Button _leave = Theme.PrimaryButton("Thoát phòng");
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
     private bool _busy;
@@ -71,7 +72,16 @@ public sealed class FormRoom : Form
         _status.SetBounds(24, 311, 752, 52);
         _action.SetBounds(582, 390, 194, 44);
         _leave.SetBounds(24, 390, 146, 44);
-        Controls.AddRange([title, code, copy, _lock, seats, _status, _leave, _action]);
+        _kick.SetBounds(346, 390, 210, 44);
+        _kick.Visible = host;
+        Controls.AddRange([title, code, copy, _lock, seats, _status, _leave, _kick, _action]);
+        _kick.Click += async (_, _) => await RunAsync(async () =>
+        {
+            if (_room.Guest is not string guest) return;
+            if (MessageBox.Show(this, $"Mời {guest} ra khỏi phòng?", Text,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                _room = await _client.KickGuestAsync(guest);
+        });
         copy.Click += (_, _) =>
         {
             try { Clipboard.SetText(room.Code); }
@@ -118,6 +128,7 @@ public sealed class FormRoom : Form
         _lock.Checked = _room.Locked;
         _action.Text = _host ? "Bắt đầu" : _room.Ready ? "Hủy sẵn sàng" : "Sẵn sàng";
         _action.Enabled = !_busy && !_starting && (!_host || _room.Ready);
+        _kick.Enabled = _host && _room.Guest != null && !_busy && !_starting;
         _lock.Enabled = _leave.Enabled = !_busy && !_starting;
         _status.Text = _starting ? "Đang bắt đầu…" : _room.Guest == null ? "Đang chờ khách vào phòng."
             : _room.Ready ? "Đang chờ chủ phòng bắt đầu." : "Đang chờ khách sẵn sàng.";
@@ -131,7 +142,7 @@ public sealed class FormRoom : Form
         Render();
         string? error = null;
         try { await action(); }
-        catch (ServerErrorException ex) when (ex.Code == "ROOM_CLOSED") { ClosedByHost(); }
+        catch (ServerErrorException ex) when (ex.Code is "ROOM_CLOSED" or "ROOM_KICKED") { RoomEnded(ex.Message); }
         catch (Exception ex) { error = ErrorTexts.FromException(ex); }
         finally
         {
@@ -154,16 +165,17 @@ public sealed class FormRoom : Form
             _room = latest;
             Render();
         }
-        catch (ServerErrorException ex) when (ex.Code == "ROOM_CLOSED") { if (!_done) ClosedByHost(); }
+        catch (ServerErrorException ex) when (ex.Code is "ROOM_CLOSED" or "ROOM_KICKED") { if (!_done) RoomEnded(ex.Message); }
         catch (Exception ex) { if (!_done && !_busy) Theme.ShowError(_status, ErrorTexts.FromException(ex)); }
         finally { _polling = false; }
     }
 
-    private void ClosedByHost()
+    private void RoomEnded(string message)
     {
         if (_done) return;
         _timer.Stop();
-        MessageBox.Show(this, "Chủ phòng đã đóng phòng.", Text);
+        _done = true;
+        MessageBox.Show(this, message, Text);
         Finish(DialogResult.Cancel);
     }
 
