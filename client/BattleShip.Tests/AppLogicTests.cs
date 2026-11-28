@@ -1,3 +1,7 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
 using BattleShip.App;
 using BattleShip.Network;
 
@@ -248,9 +252,94 @@ public class AppSessionTests
     }
 
     [Fact]
-    public void Start_WithoutRealClientWired_ExplainsWhatToDo()
+    public async Task Start_WithUseMockFalse_CreatesTheRealNetworkClient_StartingDisconnected()
     {
-        var ex = Assert.Throws<NotSupportedException>(() => AppSession.Start(new AppConfig { UseMock = false }));
-        Assert.True(ex.Message.Contains("UseMock"));
+        try
+        {
+            AppSession.Start(new AppConfig { UseMock = false });
+
+            Assert.True(AppSession.Client is NetworkClient);
+            Assert.False(AppSession.Client is MockNetworkClient);
+            Assert.Equal(SessionState.Disconnected, AppSession.Client.State);
+        }
+        finally
+        {
+            await AppSession.ShutdownAsync();
+        }
+    }
+
+    [Fact]
+    public async Task EnsureConnected_WhenNobodyListens_FailsFast_AndStaysDisconnected()
+    {
+        var port = FreeClosedPort();
+        try
+        {
+            AppSession.Start(new AppConfig { UseMock = false, ServerHost = "127.0.0.1", ServerPort = port });
+
+            await Assert.ThrowsAnyAsync<Exception>(() => AppSession.EnsureConnectedAsync(TimeSpan.FromSeconds(3)));
+            Assert.Equal(SessionState.Disconnected, AppSession.Client.State);
+        }
+        finally
+        {
+            await AppSession.ShutdownAsync();
+        }
+    }
+
+    [Fact]
+    public async Task RealClient_LoginRoundTrip_UsesNewlineFramedJson_WithALoopbackServer()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        // Server giả nói đúng giao thức: đọc MỘT dòng JSON, trả LOGIN_OK có "ref" = seq của yêu cầu.
+        var received = Task.Run(async () =>
+        {
+            using var socket = await listener.AcceptTcpClientAsync();
+            using var stream = socket.GetStream();
+            var utf8 = new UTF8Encoding(false);
+            using var reader = new StreamReader(stream, utf8);
+
+            var line = await reader.ReadLineAsync();
+            using var request = JsonDocument.Parse(line!);
+            var seq = request.RootElement.GetProperty("seq").GetInt32();
+
+            var reply = $"{{\"type\":\"LOGIN_OK\",\"seq\":1,\"ref\":{seq},\"data\":{{\"user_id\":7,\"username\":\"demo\"}}}}\n";
+            await stream.WriteAsync(utf8.GetBytes(reply));
+            await stream.FlushAsync();
+            return line!;
+        });
+
+        try
+        {
+            AppSession.Start(new AppConfig { UseMock = false, ServerHost = "127.0.0.1", ServerPort = port });
+            await AppSession.EnsureConnectedAsync();
+            Assert.Equal(SessionState.Connected, AppSession.Client.State);
+
+            var info = await AppSession.Client.LoginAsync("demo", "demo123");
+
+            Assert.Equal("demo", info.Username);
+            Assert.Equal(7, info.UserId);
+            Assert.Equal(SessionState.Authed, AppSession.Client.State);
+
+            using var sent = JsonDocument.Parse(await received.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.Equal("LOGIN", sent.RootElement.GetProperty("type").GetString());
+            Assert.Equal("demo", sent.RootElement.GetProperty("data").GetProperty("username").GetString());
+            Assert.Equal(1, sent.RootElement.GetProperty("data").GetProperty("version").GetInt32());
+        }
+        finally
+        {
+            await AppSession.ShutdownAsync();
+        }
+    }
+
+    /// <summary>Lấy một cổng vừa được hệ điều hành cấp rồi đóng ngay, tức là chắc chắn không ai lắng nghe.</summary>
+    private static int FreeClosedPort()
+    {
+        var probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
     }
 }

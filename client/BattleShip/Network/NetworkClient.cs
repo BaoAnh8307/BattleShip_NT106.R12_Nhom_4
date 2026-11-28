@@ -28,6 +28,9 @@ public sealed class NetworkClient : INetworkClient
     private int _seq;
     private SessionState _state = SessionState.Disconnected;
     private DateTimeOffset _lastReceive = DateTimeOffset.UtcNow;
+    private DateTimeOffset _lastSend = DateTimeOffset.UtcNow;
+    private int _lost;
+    private string? _lastServerError;
     private bool _disposed;
 
     public NetworkClient(SynchronizationContext? uiContext = null)
@@ -60,11 +63,16 @@ public sealed class NetworkClient : INetworkClient
         try
         {
             await tcp.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
+            _lifetime?.Dispose();
+            _lost = 0;
+            _lastServerError = null;
             _tcp = tcp;
             _stream = tcp.GetStream();
             _lifetime = new CancellationTokenSource();
             SetState(SessionState.Connected);
-            _lastReceive = DateTimeOffset.UtcNow;
+            var now = DateTimeOffset.UtcNow;
+            _lastReceive = now;
+            _lastSend = now;
             _receiveTask = ReceiveLoopAsync(_lifetime.Token);
             _heartbeatTask = HeartbeatLoopAsync(_lifetime.Token);
         }
@@ -77,9 +85,10 @@ public sealed class NetworkClient : INetworkClient
 
     public async Task DisconnectAsync()
     {
-        if (_tcp is null && State == SessionState.Disconnected)
+        if (_tcp is null && _lifetime is null && State == SessionState.Disconnected)
             return;
 
+        Interlocked.Exchange(ref _lost, 1);
         _lifetime?.Cancel();
         try { _tcp?.Client.Shutdown(SocketShutdown.Both); } catch { }
         _tcp?.Close();
@@ -315,6 +324,7 @@ public sealed class NetworkClient : INetworkClient
         {
             await stream.WriteAsync(bytes, token).ConfigureAwait(false);
             await stream.FlushAsync(token).ConfigureAwait(false);
+            _lastSend = DateTimeOffset.UtcNow;
         }
         finally
         {
@@ -346,14 +356,7 @@ public sealed class NetworkClient : INetworkClient
         catch (Exception ex)
         {
             if (!token.IsCancellationRequested)
-            {
-                SetState(SessionState.Disconnected);
-                FailPending(ex);
-                _ui.Raise(() => OnDisconnected?.Invoke(ex.Message));
-                try { _tcp?.Close(); } catch { }
-                _stream = null;
-                _tcp = null;
-            }
+                HandleConnectionLost(ex);
         }
     }
 
@@ -375,6 +378,8 @@ public sealed class NetworkClient : INetworkClient
             var exception = new ServerErrorException(code, message);
             if (reference.HasValue && _pending.TryGetValue(reference.Value, out var failed))
                 failed.TrySetException(exception);
+            else
+                _lastServerError = message;
             return;
         }
 
@@ -433,12 +438,12 @@ public sealed class NetworkClient : INetworkClient
 
     private async Task HeartbeatLoopAsync(CancellationToken token)
     {
-        using var timer = new PeriodicTimer(PingInterval);
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
         try
         {
             while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
             {
-                if (DateTimeOffset.UtcNow - _lastReceive >= PingInterval)
+                if (DateTimeOffset.UtcNow - _lastSend >= PingInterval)
                     await PingAsync().ConfigureAwait(false);
             }
         }
@@ -449,15 +454,22 @@ public sealed class NetworkClient : INetworkClient
         catch (Exception ex)
         {
             if (!token.IsCancellationRequested)
-            {
-                SetState(SessionState.Disconnected);
-                FailPending(ex);
-                _ui.Raise(() => OnDisconnected?.Invoke(ex.Message));
-                try { _tcp?.Close(); } catch { }
-                _stream = null;
-                _tcp = null;
-            }
+                HandleConnectionLost(ex);
         }
+    }
+
+    private void HandleConnectionLost(Exception ex)
+    {
+        if (Interlocked.Exchange(ref _lost, 1) == 1)
+            return;
+
+        _lifetime?.Cancel();
+        SetState(SessionState.Disconnected);
+        FailPending(ex);
+        _ui.Raise(() => OnDisconnected?.Invoke(_lastServerError ?? ex.Message));
+        try { _tcp?.Close(); } catch { }
+        _stream = null;
+        _tcp = null;
     }
 
     private static async Task<string?> ReadLineAsync(NetworkStream stream, CancellationToken token)
